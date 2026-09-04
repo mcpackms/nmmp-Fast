@@ -12,8 +12,8 @@ include_directories(generated/)
 file(GLOB GEN_SOURCES generated/*_functions.c generated/jni_init.c)
 
 
-set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -fvisibility=hidden ")
-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fvisibility=hidden ")
+set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -fvisibility=hidden -Wextern-initializer ")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fvisibility=hidden -Wextern-initializer ")
 
 #外部程序处理时替换 LIBNAME_PLACEHOLDER
 set(LIBNAME_PLACEHOLDER "nmmp")
