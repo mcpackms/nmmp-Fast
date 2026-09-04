@@ -14,12 +14,6 @@ java -jar nmmp.jar -jN/--jobN apk apkfile.apk
 # nmm-protect
 
 + 配置ndk及环境变量
-
-不编译nmm-protect，可以直接看使用它生成项目及最后的apk，[一个对apk处理的例子](https://github.com/mcpackms/nmmp/releases/download/demo/demo.zip)。
-
-例子在linux环境下测试的，windows也应该没问题,先安装好JDK及android sdk和ndk。
-
-下载[vm-protect.jar](https://github.com/mcpackms/nmmp/releases/download/last/vm-protect-2023-07-08-0942.jar),配置好环境变量ANDROID_SDK_HOME、ANDROID_NDK_HOME:
 ``` bash
 export ANDROID_SDK_HOME=/opt/android-sdk
 export ANDROID_NDK_HOME=/opt/android-sdk/ndk/22.1.7171670
