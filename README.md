@@ -4,7 +4,7 @@
 新增参数:
 -j/--job
 ``` bash
-java -jar nmmp.jar -jN/--jobN apk apkfile.apk
+java -jar nmmp.jar -jN/--job=N apk apkfile.apk
 ```
 
 以下是原nmmp的README
