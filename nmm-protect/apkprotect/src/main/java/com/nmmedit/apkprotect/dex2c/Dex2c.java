@@ -35,14 +35,6 @@ public class Dex2c {
     private Dex2c() {
     }
 
-    /**
-     * 处理多个dex文件
-     *
-     * @param dexFiles dex文件列表
-     * @param outDir   生成c文件等输出目录
-     * @return 输出结果配置
-     * @throws IOException
-     */
     public static GlobalDexConfig handleAllDex(@Nonnull List<File> dexFiles,
                                                @Nonnull ClassAndMethodFilter filter,
                                                @Nonnull InstructionRewriter instructionRewriter,
@@ -51,28 +43,18 @@ public class Dex2c {
         return handleAllDex(dexFiles, filter, instructionRewriter, classAnalyzer, outDir, ParallelConfig.getDefault());
     }
 
-    /**
-     * 处理多个dex文件（支持并行配置）
-     *
-     * @param dexFiles dex文件列表
-     * @param outDir   生成c文件等输出目录
-     * @param parallelConfig 并行配置
-     * @return 输出结果配置
-     * @throws IOException
-     */
     public static GlobalDexConfig handleAllDex(@Nonnull List<File> dexFiles,
                                                @Nonnull ClassAndMethodFilter filter,
                                                @Nonnull InstructionRewriter instructionRewriter,
                                                @Nonnull ClassAnalyzer classAnalyzer,
                                                @Nonnull File outDir,
                                                @Nonnull ParallelConfig parallelConfig) throws IOException {
-        //清理输出目录,避免上一次运行残留的旧拆分文件(*_native_functions_N.c)被 CMake 重新编译
         FileUtils.deleteFile(outDir);
         if (!outDir.exists()) outDir.mkdirs();
         final GlobalDexConfig globalConfig = new GlobalDexConfig(outDir);
 
         if (dexFiles.size() <= 1 || parallelConfig.getJobCount() <= 1) {
-            // 单 dex 或单线程，直接串行处理
+            // 单 dex 或单线程，直接串行处理（共用 rewriter 没问题）
             for (File file : dexFiles) {
                 final DexConfig config = handleDex(file, filter, classAnalyzer, instructionRewriter, outDir);
                 config.setShellMethods(null);
@@ -84,11 +66,15 @@ public class Dex2c {
                     Math.min(parallelConfig.getJobCount(), dexFiles.size()));
             try {
                 List<Future<DexConfig>> futures = new ArrayList<>();
-                for (File file : dexFiles) {
+                for (final File file : dexFiles) {
                     futures.add(executor.submit(new Callable<DexConfig>() {
                         @Override
                         public DexConfig call() throws Exception {
-                            return handleDex(file, filter, classAnalyzer, instructionRewriter, outDir);
+                            // ★ 关键修复：每个 dex 使用独立的 InstructionRewriter 实例
+                            //   避免多线程共享 rewriter 内部的 References 状态互相覆盖
+                            final InstructionRewriter perDexRewriter =
+                                    newRewriterInstance(instructionRewriter);
+                            return handleDex(file, filter, classAnalyzer, perDexRewriter, outDir);
                         }
                     }));
                 }
@@ -114,8 +100,21 @@ public class Dex2c {
     }
 
     /**
-     * 处理单个dex文件
+     * 从原型克隆一个独立的 InstructionRewriter 实例。
+     * 要求实现类提供 public 无参构造（RandomInstructionRewriter 已满足）。
      */
+    private static InstructionRewriter newRewriterInstance(@Nonnull InstructionRewriter proto) {
+        try {
+            return proto.getClass().getDeclaredConstructor().newInstance();
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(
+                    "Cannot create per-dex InstructionRewriter for "
+                            + proto.getClass().getName()
+                            + ". Please add a public no-arg constructor.",
+                    e);
+        }
+    }
+
     public static DexConfig handleDex(@Nonnull File dexFile,
                                       @Nonnull ClassAndMethodFilter filter,
                                       @Nonnull ClassAnalyzer classAnalyzer,
@@ -134,7 +133,6 @@ public class Dex2c {
                                             @Nonnull ClassAnalyzer classAnalyzer,
                                             @Nonnull InstructionRewriter instructionRewriter,
                                             @Nonnull File outDir) throws IOException {
-        //清理输出目录,避免上一次运行残留的旧拆分文件
         FileUtils.deleteFile(outDir);
         if (!outDir.exists()) outDir.mkdirs();
         final GlobalDexConfig globalDexConfig = new GlobalDexConfig(outDir);
@@ -145,9 +143,6 @@ public class Dex2c {
         return dexConfig;
     }
 
-    /**
-     * 处理单个dex流
-     */
     public static DexConfig handleDex(@Nonnull InputStream dex,
                                       @Nonnull String dexFileName,
                                       @Nonnull ClassAndMethodFilter filter,
@@ -157,11 +152,9 @@ public class Dex2c {
         if (!outDir.exists()) outDir.mkdirs();
         DexConfig config = splitDex(dex, dexFileName, filter, classAnalyzer, outDir);
 
-
         final DexBackedDexFile nativeImplDexFile = DexBackedDexFile.fromInputStream(null,
                 new BufferedInputStream(new FileInputStream(config.getImplDexFile())));
 
-        //根据符号dex生成c代码
         try (FileWriter nativeCodeWriter = new FileWriter(config.getNativeFunctionsFile());
              FileWriter resolverWriter = new FileWriter(config.getResolverFile());
              FileWriter resolverHeaderWriter = new FileWriter(config.getResolverHeaderFile());
@@ -182,20 +175,15 @@ public class Dex2c {
         return config;
     }
 
-    //分割dex产生两个dex,一个为壳dex,一个为实现dex,壳dex将会打包进apk,实现dex会被转换为c代码
     @Nonnull
     private static DexConfig splitDex(@Nonnull InputStream dex,
                                       @Nonnull String dexFileName,
                                       @Nonnull ClassAndMethodFilter filter,
                                       @Nonnull ClassAnalyzer classAnalyzer,
                                       @Nonnull File outDir) throws IOException {
-        DexBackedDexFile originDexFile = DexBackedDexFile.fromInputStream(
-                null,
-                dex);
+        DexBackedDexFile originDexFile = DexBackedDexFile.fromInputStream(null, dex);
 
-        //把方法变为本地方法,用它替换掉原本的dex
         DexPool shellDexPool = new DexPool(originDexFile.getOpcodes());
-
         DexPool nativeImplDexPool = new DexPool(originDexFile.getOpcodes());
 
         final MethodConverter methodConverter = new MethodConverter(classAnalyzer);
@@ -210,34 +198,20 @@ public class Dex2c {
                 final ArrayList<Method> implDirectMethods = new ArrayList<>();
                 final ArrayList<Method> implVirtualMethods = new ArrayList<>();
 
-                // 处理所有需要转换的方法
                 for (Method method : classDef.getMethods()) {
-                    if (filter.acceptMethod(method)
-                        // 有直接调用jna方法的指令,则不能进行native化
-                        // 感觉很少会发生,默认就把这个判断注释掉了,谁需要再去掉注释
-//                            && !classAnalyzer.hasCallJnaMethod(method)
-                    ) {
+                    if (filter.acceptMethod(method)) {
                         final Pair<List<? extends Method>, Method> pair = methodConverter.convert(method);
-                        // 转换后可能出现变为多个方法
                         addMethods(shellDirectMethods, shellVirtualMethods, pair.first);
-
-                        //记录当前类，所有需要被修改的方法
                         shellMethods.put(classDef.getType(), pair.first);
-
-                        //只有一个具体实现
                         addMethod(implDirectMethods, implVirtualMethods, pair.second);
                     } else {
-                        //不需要进行处理
                         addMethod(shellDirectMethods, shellVirtualMethods, method);
                     }
                 }
 
-                //把需要转换的方法设为native
                 shellDexPool.internClass(new MyClassDef(classDef, shellDirectMethods, shellVirtualMethods));
-                //收集所有需要转换的方法生成新dex
                 nativeImplDexPool.internClass(new MyClassDef(classDef, implDirectMethods, implVirtualMethods));
             } else {
-                //不需要处理的class,直接复制
                 shellDexPool.internClass(classDef);
             }
         }
@@ -245,9 +219,7 @@ public class Dex2c {
 
         config.setShellMethods(shellMethods);
 
-        //写入需要运行的dex
         shellDexPool.writeTo(new FileDataStore(config.getShellDexFile()));
-        //写入符号dex
         nativeImplDexPool.writeTo(new FileDataStore(config.getImplDexFile()));
         return config;
     }
@@ -270,7 +242,6 @@ public class Dex2c {
         }
     }
 
-    //在处理过的class的static{}块最前面添加注册本地方法代码,如果不存在static{}块则新增<clinit>方法
     public static List<DexPool> injectCallRegisterNativeInsns(DexConfig config,
                                                               DexPool lastDexPool,
                                                               Set<String> mainClassSet,
@@ -283,9 +254,8 @@ public class Dex2c {
         List<DexPool> dexPools = new ArrayList<>();
         dexPools.add(lastDexPool);
 
-
         for (ClassDef classDef : dexNativeFile.getClasses()) {
-            if (mainClassSet.contains(classDef.getType())) {//提前处理过的class,不用再处理
+            if (mainClassSet.contains(classDef.getType())) {
                 continue;
             }
             internClass(config, lastDexPool, classDef);
